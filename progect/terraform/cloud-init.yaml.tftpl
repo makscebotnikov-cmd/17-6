@@ -1,0 +1,70 @@
+#cloud-config
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - apt-transport-https
+  - ca-certificates
+  - curl
+  - gnupg
+  - lsb-release
+
+runcmd:
+  # Установка Docker
+  - curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+  - echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+  - apt-get update
+  - apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  
+  # Добавляем пользователя в группу docker
+  - usermod -aG docker ubuntu
+  
+  # Создаём папку приложения
+  - mkdir -p /opt/app
+  
+  # Создаём .env с ПЕРЕМЕННЫМИ ИЗ TERRAFORM
+  - |
+    cat > /opt/app/.env << ENV_EOF
+    DB_HOST=${db_host}
+    DB_PORT=3306
+    DB_USER=${db_user}
+    DB_PASSWORD=${db_password}
+    DB_NAME=${db_name}
+    REGISTRY_ID=${registry_id}
+    ENV_EOF
+  
+  # Создаём docker-compose.yml
+  - |
+    cat > /opt/app/docker-compose.yml << 'YAML_EOF'
+    version: '3.8'
+    services:
+      web:
+        image: cr.yandex/${registry_id}/yc-final-app:latest
+        container_name: web-app
+        restart: unless-stopped
+        ports:
+          - "80:80"
+        env_file:
+          - .env
+        environment:
+          - DB_HOST=$${DB_HOST}
+          - DB_PORT=$${DB_PORT}
+          - DB_USER=$${DB_USER}
+          - DB_PASSWORD=$${DB_PASSWORD}
+          - DB_NAME=$${DB_NAME}
+        networks:
+          - app-net
+        healthcheck:
+          test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:80/')"]
+          interval: 30s
+          timeout: 10s
+          retries: 3
+    networks:
+      app-net:
+        driver: bridge
+    YAML_EOF
+  
+  # Ждём пока Registry будет доступен и запускаем приложение
+  - sleep 30
+  - docker-compose -f /opt/app/docker-compose.yml up -d
